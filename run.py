@@ -110,6 +110,7 @@ async def cleanup_tag():
                         sha256_to_remove = findall[0]
                     print(f"remove ===> {image}:{tag}@{sha256_to_remove}")
                     registryClient.query(f"{REGISTRY_URL}/v2/{image}/manifests/sha256:{sha256_to_remove}", 'delete')
+                    minioClient.remove_object(BUCKET, to_remove_link.object_name)
                     gc = True
                 else:
                     print(f"stay ===> {to_remove_link.object_name}")
