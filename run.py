@@ -7,6 +7,7 @@ from japronto import Application
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from minio import Minio
 from minio.error import (ResponseError, BucketAlreadyOwnedByYou, BucketAlreadyExists)
+from rgc.registry.api import RegistryApi
 
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler()
@@ -20,7 +21,13 @@ minioClient = Minio(os.getenv('ENDPOINT'),
                     secret_key=os.getenv('SECRET_KEY'),
                     secure=bool(os.getenv('SECURE', 1)))
 
+registryClient = RegistryApi(
+    user=os.getenv('REGISTRY_LOGIN'),
+    token=os.getenv('REGISTRY_TOKEN')
+)
+
 BUCKET = os.getenv('BUCKET', 'registry')
+REGISTRY_URL = os.getenv('REGISTRY_URL')
 REGISTRY_PATH = os.getenv('REGISTRY_PATH', 'docker/registry/v2/repositories/')
 REGISTRY_LATEST = []
 WORK_QUEUE_REGISTRY_LATEST = []
@@ -88,22 +95,28 @@ async def cleanup_tag():
             tmp_sha256 = d
         sha256 = tmp_sha256.decode('utf-8').replace('sha256:', '')
         print(this_registry)
-        findall = re.findall('(.*)\/_manifests\/tags\/(.*)\/current\/link', this_registry)
+        findall = re.findall(f'({REGISTRY_PATH})(.*)\/_manifests\/tags\/(.*)\/current\/link', this_registry)
         image, tag = ['regex-error', 'regex-error']
         if findall:
-            image, tag = findall[0]
+            this_path, image, tag = findall[0]
         print(f"cleanup ===> {image}:{tag}@{sha256}")
         index = this_registry[:-12] + 'index/sha256/'
-        for to_remove_link in await list_objects(index, recursive=True):
+        gc = False
+        for to_remove_link in await list_objects(index):
             try:
-                if index + sha256 + '/link' != to_remove_link.object_name:
-                    print(f"remove ===> {to_remove_link.object_name}")
-                    minioClient.remove_object(BUCKET, to_remove_link.object_name)
+                if index + sha256 + '/' != to_remove_link.object_name:
+                    findall = re.findall('.*\/index\/sha256\/(.*)\/', to_remove_link.object_name)
+                    if findall:
+                        sha256_to_remove = findall[0]
+                    print(f"remove ===> {image}:{tag}@{sha256_to_remove}")
+                    registryClient.query(f"{REGISTRY_URL}/v2/{image}/manifests/sha256:{sha256_to_remove}", 'delete')
+                    gc = True
                 else:
                     print(f"stay ===> {to_remove_link.object_name}")
             except ResponseError as e:
                 print(e)
-        print(f"please run registry GC for remove blobs for {image}:{tag}")
+        if gc:
+            print(f"please run registry GC for remove blobs for {image}:{tag}")
     except Exception as e:
         print(e)
     WORK_QUEUE_REGISTRY_LATEST.remove(this_registry)
