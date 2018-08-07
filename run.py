@@ -1,12 +1,12 @@
 import os
 import logging
 import re
-from copy import copy
 
+from apscheduler.triggers.cron import CronTrigger
 from japronto import Application
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from minio import Minio
-from minio.error import (ResponseError, BucketAlreadyOwnedByYou, BucketAlreadyExists)
+from minio.error import ResponseError
 from rgc.registry.api import RegistryApi
 
 logger = logging.getLogger(__name__)
@@ -125,8 +125,7 @@ async def cleanup_tag():
 
 async def connect_scheduler():
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(add_registry_path, 'interval', seconds=int(os.getenv('DRS3GC_SECONDS_PATH', 3600)),
-                      max_instances=1)
+    scheduler.add_job(add_registry_path, CronTrigger.from_crontab(os.getenv('DRS3GC_CRON_PATH', '0 0 * * 0')), max_instances=1)
     scheduler.add_job(cleanup_tag, 'interval', seconds=int(os.getenv('DRS3GC_SECONDS_CLEANUP', 5)), max_instances=10)
     scheduler.add_job(scan_bucket, 'interval', seconds=int(os.getenv('DRS3GC_SECONDS_SCAN', 1)), max_instances=10)
     scheduler.start()
