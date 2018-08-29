@@ -1,3 +1,4 @@
+import asyncio
 import os
 import logging
 import re
@@ -160,6 +161,7 @@ async def cleanup_tag():
                     print(f"remove ===> {image}:{tag}@{sha256_to_remove}")
                     data = registryClient.query(f"{REGISTRY_URL}/v2/{image}/manifests/sha256:{sha256_to_remove}", 'delete')
                     if type(data) == dict:
+                        await asyncio.sleep(10)
                         minioClient.remove_object(BUCKET, to_remove_link.object_name)
                         gc = True
                 else:
