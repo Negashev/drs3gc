@@ -1,13 +1,62 @@
 import os
 import logging
 import re
+import json
+import requests
+import www_authenticate
 
 from apscheduler.triggers.cron import CronTrigger
 from japronto import Application
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from minio import Minio
 from minio.error import ResponseError
-from rgc.registry.api import RegistryApi
+from requests.auth import HTTPBasicAuth
+
+class RegistryApi( object ):
+    def __init__( self, user, token ):
+        self.user  = user
+        self.token = token
+
+    @staticmethod
+    def get_bearer_token( user, token, service, scope, realm ):
+        # https://stackoverflow.com/a/23497912/2860751
+        payload_str = "&".join("%s=%s" % (k,v) for k,v in { "scope": scope, "service": service}.items())
+        r = requests.get( realm, auth=HTTPBasicAuth( user, token ), params=payload_str )
+        return json.loads( r.content )['token']
+
+    @staticmethod
+    def get_auth_header( url, method ):
+        r = getattr( requests, method )( url )
+        if r.status_code == 401:
+            try:
+                r.headers['Www-Authenticate']
+            except KeyError:
+                raise Exception('could not fetch bearer info from registry endpoint')
+            else:
+                return www_authenticate.parse( r.headers['Www-Authenticate'] )
+        else:
+            raise 'invalid auth_header response code' + str( r.status_code )
+
+    @staticmethod
+    def get_result( url, method, token ):
+        if method == "head":
+            r = requests.head( url, headers={ 'Accept': 'application/vnd.docker.distribution.manifest.v2+json', 'Authorization': 'Bearer ' + token } )
+            return( r.headers )
+        else:
+            r = getattr( requests, method )( url, headers={ 'Authorization': 'Bearer ' + token } )
+            if method == "delete":
+                return r.content
+            else:
+                return( json.loads( r.content ) )
+
+    def query( self, url, method='get' ):
+        params = self.get_auth_header( url, method )
+        try:
+            params['Bearer']
+        except KeyError:
+            raise Exception('could not fetch bearer info from registry endpoint')
+        else:
+            return self.get_result( url, method, self.get_bearer_token( self.user, self.token, params['Bearer']['service'], params['Bearer']['scope'], params['Bearer']['realm'] ) )
 
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler()
@@ -19,7 +68,7 @@ logger.setLevel(logging.INFO)
 minioClient = Minio(os.getenv('ENDPOINT'),
                     access_key=os.getenv('ACCESS_KEY'),
                     secret_key=os.getenv('SECRET_KEY'),
-                    secure=bool(os.getenv('SECURE', 1)))
+                    secure=bool(int(os.getenv('SECURE', 1))))
 
 registryClient = RegistryApi(
     user=os.getenv('REGISTRY_LOGIN'),
@@ -109,9 +158,10 @@ async def cleanup_tag():
                     if findall:
                         sha256_to_remove = findall[0]
                     print(f"remove ===> {image}:{tag}@{sha256_to_remove}")
-                    registryClient.query(f"{REGISTRY_URL}/v2/{image}/manifests/sha256:{sha256_to_remove}", 'delete')
-                    minioClient.remove_object(BUCKET, to_remove_link.object_name)
-                    gc = True
+                    data = registryClient.query(f"{REGISTRY_URL}/v2/{image}/manifests/sha256:{sha256_to_remove}", 'delete')
+                    if type(data) == dict:
+                        minioClient.remove_object(BUCKET, to_remove_link.object_name)
+                        gc = True
                 else:
                     print(f"stay ===> {to_remove_link.object_name}")
             except ResponseError as e:
